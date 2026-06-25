@@ -1,0 +1,11 @@
+# Market-Data MCP — runtime dependencies
+# Python 3.11+ (uses stdlib zoneinfo). Versions pinned to what the server was
+# built and smoke-tested against; relax cautiously.
+
+fastmcp==3.4.2          # MCP server + OAuth providers (InMemoryOAuthProvider)
+akshare==1.18.64        # all China data + SHFE commodities (no API key)
+fredapi==0.5.2          # US Treasury yields, Fed target, macro (FRED_API_KEY)
+finnhub-python==2.4.29  # US equities, VIX, sector ETFs, FX, oil (FINNHUB_API_KEY)
+
+# Transitive but worth pinning (pulled by the above):
+#   mcp==1.28.0, pandas==3.0.3, httpx==0.28.1

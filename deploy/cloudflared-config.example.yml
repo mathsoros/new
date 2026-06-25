@@ -1,0 +1,25 @@
+# ~/.cloudflared/config.yml — REUSE the existing tunnel that already fronts
+# gbrain / oura (do not create a new one). Add one ingress route for this MCP.
+#
+# After editing, register the DNS route once:
+#   cloudflared tunnel route dns <tunnelId> market.popcult.win
+# Restart the tunnel task to pick up the new ingress:
+#   Stop-ScheduledTask -TaskName cloudflared-tunnel
+#   Start-ScheduledTask -TaskName cloudflared-tunnel
+
+tunnel: <tunnelId>
+credentials-file: C:\Users\charl\.cloudflared\<tunnelId>.json
+
+ingress:
+  # existing routes (gbrain, oura, ...) stay above
+  - hostname: brain.popcult.win
+    service: http://localhost:3131
+  - hostname: oura.popcult.win
+    service: http://localhost:3132
+
+  # --- new: market-data MCP ---
+  - hostname: market.popcult.win
+    service: http://localhost:8787
+
+  # required catch-all
+  - service: http_status:404
