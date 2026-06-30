@@ -17,6 +17,7 @@ but were blocked by the build sandbox's egress proxy, so the live smoke tests
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -54,32 +55,99 @@ def _window(days: int = 20) -> tuple[str, str]:
     return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
 
 
+def _retry(fn, attempts: int = 3, base: float = 0.8):
+    """Call ``fn`` with small backoff retries.
+
+    eastmoney's push2 endpoints intermittently close the connection without a
+    response (``RemoteDisconnected``) when hit in rapid succession — a couple of
+    spaced retries clears it. Raises the last exception if all attempts fail.
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - re-raised after retries
+            last = e
+            time.sleep(base * (i + 1))
+    raise last
+
+
+def _pair_row(df, pair_c, *, offshore: bool = False):
+    """Find the USD/CNY (or USD/CNH) row regardless of how the pair is spelled.
+
+    CFETS frames label the pair as "USD/CNY", "美元/人民币", "USDCNY" etc.;
+    match on the presence of both legs instead of an exact string.
+    """
+    s = df[pair_c].astype(str)
+    usd = s.str.contains("USD") | s.str.contains("美元")
+    if offshore:
+        cny = s.str.contains("CNH") | s.str.contains("离岸")
+    else:
+        cny = (s.str.contains("CNY") | s.str.contains("人民币")) & ~s.str.contains("CNH")
+    return last_row(df[usd & cny])
+
+
 # --------------------------------------------------------------------------- #
 # Equities
 # --------------------------------------------------------------------------- #
-def index_daily(code: str) -> dict[str, Optional[float]]:
-    """Latest daily close / change% / turnover for an A-share index.
-
-    ``index_zh_a_hist`` returns 日期/开盘/收盘/最高/最低/成交量/成交额/振幅/
-    涨跌幅/涨跌额/换手率.
-    """
-    start, end = _window()
-    df = _ak().index_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end)
+def _parse_index_hist(df) -> Optional[dict[str, Optional[float]]]:
+    """Parse an A-share index daily frame (收盘/涨跌幅/成交额/日期 columns)."""
     row = last_row(df)
     if row is None:
-        return {"close": None, "change_pct": None, "amount_yi": None, "date": None}
+        return None
     close_c = pick_col(df, ["收盘"])
     chg_c = pick_col(df, ["涨跌幅"])
-    amt_c = pick_col(df, ["成交额"])
-    date_c = pick_col(df, ["日期"])
+    amt_c = pick_col(df, ["成交额", "amount"])
+    date_c = pick_col(df, ["日期", "date"])
+    close = to_float(row.get(close_c)) if close_c else None
+    if close is None:
+        return None
+    chg = to_float(row.get(chg_c)) if chg_c else None
+    # Some sources (stock_zh_index_daily_em) carry no 涨跌幅 → derive from prev close.
+    if chg is None and close_c and len(df) >= 2:
+        prev = to_float(df.iloc[-2].get(close_c))
+        if prev:
+            chg = round((close - prev) / prev * 100, 2)
     amount = to_float(row.get(amt_c)) if amt_c else None
     return {
-        "close": to_float(row.get(close_c)) if close_c else None,
-        "change_pct": to_float(row.get(chg_c)) if chg_c else None,
-        # 成交额 comes in CNY; report in 亿元 (100M) which is the report unit.
+        "close": close,
+        "change_pct": chg,
+        # 成交额 in CNY → report in 亿元 (1e8), the morning-report unit.
         "amount_yi": round(amount / 1e8, 2) if amount is not None else None,
         "date": str(row.get(date_c)) if date_c else None,
     }
+
+
+def index_daily(code: str) -> dict[str, Optional[float]]:
+    """Latest daily close / change% / turnover for an A-share index.
+
+    Primary: ``index_zh_a_hist`` (eastmoney). On eastmoney push2
+    ``RemoteDisconnected`` flakiness, retries, then falls back to
+    ``stock_zh_index_daily_em`` (sh/sz-prefixed symbol).
+    """
+    empty = {"close": None, "change_pct": None, "amount_yi": None, "date": None}
+    start, end = _window()
+    try:
+        df = _retry(
+            lambda: _ak().index_zh_a_hist(
+                symbol=code, period="daily", start_date=start, end_date=end
+            )
+        )
+        parsed = _parse_index_hist(df)
+        if parsed:
+            return parsed
+    except Exception:
+        pass
+    # Fallback: stock_zh_index_daily_em wants an exchange-prefixed symbol.
+    em_symbol = ("sh" if code[0] == "0" else "sz") + code
+    try:
+        df = _retry(lambda: _ak().stock_zh_index_daily_em(symbol=em_symbol))
+        parsed = _parse_index_hist(df)
+        if parsed:
+            return parsed
+    except Exception:
+        pass
+    return empty
 
 
 def market_breadth() -> dict[str, Optional[float]]:
@@ -140,8 +208,13 @@ def pboc_midpoint(ccy: str = "美元") -> dict[str, Optional[Any]]:
         return {"value": None, "date": None}
     ccy_c = pick_col(df, [ccy])
     date_c = pick_col(df, ["日期"])
+    val = to_float(row.get(ccy_c)) if ccy_c else None
+    # SAFE quotes the central parity per 100 foreign-currency units (USD/CNY
+    # comes back as ~700, not ~7). Normalise to per-1 when the magnitude says so.
+    if val is not None and val > 50:
+        val = round(val / 100, 4)
     return {
-        "value": to_float(row.get(ccy_c)) if ccy_c else None,
+        "value": val,
         "date": str(row.get(date_c)) if date_c else None,
     }
 
@@ -155,8 +228,7 @@ def cfets_spot(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
     pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
     bid_c = pick_col(df, ["买", "bid"])
     ask_c = pick_col(df, ["卖", "ask"])
-    sub = df[df[pair_c].astype(str).str.replace(" ", "") == pair.replace(" ", "")]
-    row = last_row(sub)
+    row = _pair_row(df, pair_c, offshore="CNH" in pair.upper())
     if row is None:
         return {"bid": None, "ask": None, "mid": None}
     bid = to_float(row.get(bid_c)) if bid_c else None
@@ -173,8 +245,7 @@ def fx_swap_points(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
     """
     df = _ak().fx_swap_quote()
     pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
-    sub = df[df[pair_c].astype(str).str.replace(" ", "") == pair.replace(" ", "")]
-    row = last_row(sub)
+    row = _pair_row(df, pair_c, offshore="CNH" in pair.upper())
     if row is None:
         return {"1M": None, "3M": None, "1Y": None}
     c1m = pick_col(df, ["1月", "1M", "一个月"])

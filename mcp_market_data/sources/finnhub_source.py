@@ -69,8 +69,16 @@ def economic_calendar() -> Optional[list[dict[str, Any]]]:
 
     Returns the raw event list or ``None``. The tool layer maps missing
     consensus to ``null`` and NEVER fabricates a consensus value.
+
+    finnhub-python 2.4.x removed the ``economic_calendar`` method (premium
+    endpoint), so guard with ``getattr`` and degrade to ``None`` rather than
+    raising an ``AttributeError``.
     """
-    data = _finnhub().economic_calendar()
+    client = _finnhub()
+    fn = getattr(client, "economic_calendar", None)
+    if fn is None:
+        return None
+    data = fn()
     if not data:
         return None
     return data.get("economicCalendar") if isinstance(data, dict) else data
