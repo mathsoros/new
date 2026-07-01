@@ -10,12 +10,13 @@
 
 $ErrorActionPreference = "Stop"
 $TaskName = "market-data-mcp"
-$Cmd      = "E:\market-data-mcp\deploy\run-market-data-mcp.cmd"
+$Launcher = "E:\market-data-mcp\deploy\run-market-data-mcp.ps1"
 $Port     = 8787
 
 New-Item -ItemType Directory -Force -Path "E:\market-data-mcp\logs" | Out-Null
 
-$action   = New-ScheduledTaskAction -Execute $Cmd
+$action   = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`""
 $trigger  = New-ScheduledTaskTrigger -AtStartup     # AtLogOn if no admin/S4U
 $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
