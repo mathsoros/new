@@ -14,7 +14,7 @@ git clone -b claude/pensive-goldberg-abgddl https://github.com/mathsoros/new.git
 
 ## 一键编排（推荐）
 
-改好 `deploy\deploy.ps1` 顶部 CONFIG（`$TunnelId` 填你现有 gbrain/oura 隧道 id；域名/端口默认 market.popcult.win:8787），然后：
+改好 `deploy\deploy.ps1` 顶部 CONFIG（`$TunnelId` 填你现有 gbrain/oura 隧道 id；域名/端口默认 market.popcult.win:8790），然后：
 ```powershell
 cd E:\market-data-mcp
 .\deploy\deploy.ps1
@@ -50,7 +50,7 @@ notepad .env   # 填 FRED_API_KEY / FINNHUB_API_KEY；确认 MCP_TRANSPORT=http,
 在 `~/.cloudflared/config.yml` 的 404 catch-all 之上加：
 ```yaml
   - hostname: market.popcult.win
-    service: http://localhost:8787
+    service: http://localhost:8790
 ```
 ```powershell
 cloudflared tunnel route dns <tunnelId> market.popcult.win
@@ -63,7 +63,7 @@ Stop-ScheduledTask -TaskName cloudflared-tunnel; Start-ScheduledTask -TaskName c
 .\deploy\register-scheduled-task.ps1
 Start-ScheduledTask -TaskName market-data-mcp
 ```
-☐ 本地 `POST http://127.0.0.1:8787/mcp` 返回 **401 + WWW-Authenticate**（开了 OAuth 时这是健康信号，不是错误）
+☐ 本地 `POST http://127.0.0.1:8790/mcp` 返回 **401 + WWW-Authenticate**（开了 OAuth 时这是健康信号，不是错误）
 
 **STEP 6 — claude.ai 注册 connector + 挂到晨报 routine**
 1. claude.ai → Settings → Connectors → Add custom connector → URL `https://market.popcult.win`

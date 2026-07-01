@@ -11,7 +11,7 @@
 $ErrorActionPreference = "Stop"
 $TaskName = "market-data-mcp"
 $Launcher = "E:\market-data-mcp\deploy\run-market-data-mcp.ps1"
-$Port     = 8787
+$Port     = 8790
 
 New-Item -ItemType Directory -Force -Path "E:\market-data-mcp\logs" | Out-Null
 

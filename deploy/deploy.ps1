@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 # ----------------------------- CONFIG -------------------------------------- #
 $Root     = "E:\market-data-mcp"      # where the repo is cloned
 $Domain   = "market.popcult.win"      # public hostname on the existing tunnel
-$Port     = 8787
+$Port     = 8790
 $TunnelId = "<tunnelId>"              # the EXISTING gbrain/oura tunnel id
 $TaskName = "market-data-mcp"
 # --------------------------------------------------------------------------- #

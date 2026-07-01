@@ -87,7 +87,7 @@ def main() -> None:
     mcp = build_server()
     if transport in ("http", "streamable-http"):
         host = os.environ.get("HOST", "127.0.0.1")  # cloudflared lives on loopback
-        port = int(os.environ.get("PORT", "8787"))
+        port = int(os.environ.get("PORT", "8790"))
         log.info("Starting Streamable HTTP on %s:%s", host, port)
         mcp.run(transport="http", host=host, port=port)
     else:

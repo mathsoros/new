@@ -19,7 +19,7 @@ ingress:
 
   # --- new: market-data MCP ---
   - hostname: market.popcult.win
-    service: http://localhost:8787
+    service: http://localhost:8790
 
   # required catch-all
   - service: http_status:404
