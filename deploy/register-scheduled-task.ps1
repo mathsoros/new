@@ -17,15 +17,21 @@ New-Item -ItemType Directory -Force -Path "E:\market-data-mcp\logs" | Out-Null
 
 $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`""
-$trigger  = New-ScheduledTaskTrigger -AtStartup     # AtLogOn if no admin/S4U
+# AtLogOn + Interactive (NOT AtStartup + S4U): the venv Python needs charl's
+# loaded user profile to initialize, and the outbound proxy (127.0.0.1:10808)
+# lives in charl's interactive session — so the server must run there too.
+# S4U starts a profile-less session where python.exe exits 1 before logging.
+# This box auto-logs-in charl (it already runs the interactive proxy +
+# gbrain/oura), so AtLogOn is effectively always-on.
+$trigger  = New-ScheduledTaskTrigger -AtLogOn -User "charl"
 $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 
-# Identity = charl, S4U, highest available (same as gbrain-serve).
-$principal = New-ScheduledTaskPrincipal -UserId "charl" -LogonType S4U -RunLevel Highest
+# Identity = charl, Interactive so the full user profile + session env load.
+$principal = New-ScheduledTaskPrincipal -UserId "charl" -LogonType Interactive -RunLevel Highest
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Settings $settings -Principal $principal -Force

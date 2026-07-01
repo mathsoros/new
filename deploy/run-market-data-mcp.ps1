@@ -24,5 +24,10 @@ Get-Content "$Root\.env" | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Ob
 $env:MCP_TRANSPORT = "http"
 
 $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+$py = "$Root\.venv\Scripts\python.exe"
 Add-Content "$Root\logs\server.log" "`n==== $ts launch (proxy=$($env:HTTPS_PROXY)) ===="
-& "$Root\.venv\Scripts\python.exe" "$Root\server.py" *>> "$Root\logs\server.log"
+Add-Content "$Root\logs\server.log" "python: $(& $py --version 2>&1)"
+# Capture stdout+stderr reliably even with no console attached (a bare *>>
+# can drop native crash output when the task runs profile-less).
+& $py "$Root\server.py" 2>&1 | ForEach-Object { Add-Content "$Root\logs\server.log" $_ }
+Add-Content "$Root\logs\server.log" "==== exited code=$LASTEXITCODE ===="
