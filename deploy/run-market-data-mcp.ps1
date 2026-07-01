@@ -27,7 +27,8 @@ $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 $py = "$Root\.venv\Scripts\python.exe"
 Add-Content "$Root\logs\server.log" "`n==== $ts launch (proxy=$($env:HTTPS_PROXY)) ===="
 Add-Content "$Root\logs\server.log" "python: $(& $py --version 2>&1)"
-# Capture stdout+stderr reliably even with no console attached (a bare *>>
-# can drop native crash output when the task runs profile-less).
-& $py "$Root\server.py" 2>&1 | ForEach-Object { Add-Content "$Root\logs\server.log" $_ }
+# -u = unbuffered: without it Python block-buffers stdout when piped, so the
+# startup logs never reach the file while the server runs. Capture stdout+stderr
+# and flush every line so we can see exactly where startup gets to.
+& $py -u "$Root\server.py" 2>&1 | ForEach-Object { Add-Content "$Root\logs\server.log" $_ }
 Add-Content "$Root\logs\server.log" "==== exited code=$LASTEXITCODE ===="
