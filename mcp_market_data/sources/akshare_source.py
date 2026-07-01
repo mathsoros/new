@@ -118,14 +118,58 @@ def _parse_index_hist(df) -> Optional[dict[str, Optional[float]]]:
     }
 
 
-def index_daily(code: str) -> dict[str, Optional[float]]:
-    """Latest daily close / change% / turnover for an A-share index.
+# Sina serves the whole index board in one direct call; memoize it briefly so
+# the 5-index loop doesn't refetch the 500+ row snapshot each time.
+_SINA_SPOT: dict[str, Any] = {"df": None, "ts": 0.0}
 
-    Primary: ``index_zh_a_hist`` (eastmoney). On eastmoney push2
-    ``RemoteDisconnected`` flakiness, retries, then falls back to
-    ``stock_zh_index_daily_em`` (sh/sz-prefixed symbol).
+
+def _sina_code(code: str) -> str:
+    """A-share index code -> Sina symbol (sh/sz prefix)."""
+    return ("sh" if code[0] == "0" else "sz") + code
+
+
+def _sina_index_spot():
+    now = time.time()
+    if _SINA_SPOT["df"] is not None and now - _SINA_SPOT["ts"] < 120:
+        return _SINA_SPOT["df"]
+    df = _retry(lambda: _ak().stock_zh_index_spot_sina())
+    _SINA_SPOT["df"] = df
+    _SINA_SPOT["ts"] = now
+    return df
+
+
+def index_daily(code: str) -> dict[str, Optional[float]]:
+    """Latest close / change% / turnover for an A-share index.
+
+    Primary: ``stock_zh_index_spot_sina`` — Sina's index snapshot reaches the
+    deploy host on the DIRECT China route (eastmoney push2his gets connection-
+    reset there). When the market is closed the snapshot's 最新价 is the last
+    close, which is what the morning report wants. Fallback: ``index_zh_a_hist``
+    (eastmoney; only reachable via proxy).
     """
     empty = {"close": None, "change_pct": None, "amount_yi": None, "date": None}
+    sina_code = _sina_code(code)
+    try:
+        df = _sina_index_spot()
+        code_c = pick_col(df, ["代码", "symbol", "code"]) or df.columns[0]
+        sub = df[df[code_c].astype(str).str.lower() == sina_code]
+        row = last_row(sub)
+        if row is not None:
+            close_c = pick_col(df, ["最新价", "收盘", "close", "price"])
+            chg_c = pick_col(df, ["涨跌幅", "changepercent"])
+            amt_c = pick_col(df, ["成交额", "amount"])
+            close = to_float(row.get(close_c)) if close_c else None
+            if close is not None:
+                amount = to_float(row.get(amt_c)) if amt_c else None
+                return {
+                    "close": close,
+                    "change_pct": to_float(row.get(chg_c)) if chg_c else None,
+                    "amount_yi": round(amount / 1e8, 2) if amount is not None else None,
+                    "date": datetime.now(GMT8).date().isoformat(),
+                }
+    except Exception:
+        pass
+    # Fallback: eastmoney daily hist (reachable only via proxy on this host).
     start, end = _window()
     try:
         df = _retry(
@@ -133,15 +177,6 @@ def index_daily(code: str) -> dict[str, Optional[float]]:
                 symbol=code, period="daily", start_date=start, end_date=end
             )
         )
-        parsed = _parse_index_hist(df)
-        if parsed:
-            return parsed
-    except Exception:
-        pass
-    # Fallback: stock_zh_index_daily_em wants an exchange-prefixed symbol.
-    em_symbol = ("sh" if code[0] == "0" else "sz") + code
-    try:
-        df = _retry(lambda: _ak().stock_zh_index_daily_em(symbol=em_symbol))
         parsed = _parse_index_hist(df)
         if parsed:
             return parsed
