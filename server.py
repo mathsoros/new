@@ -57,9 +57,18 @@ def _build_auth():
     if not public_url:
         raise SystemExit("MCP_AUTH=oauth requires PUBLIC_URL=https://<your-domain>")
     from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
+    from mcp.server.auth.settings import ClientRegistrationOptions
 
-    log.info("OAuth enabled; issuer=%s", public_url)
-    return InMemoryOAuthProvider(base_url=public_url)
+    # DCR (dynamic client registration) MUST be enabled — Claude's connector
+    # self-registers via POST /register; without it the AS metadata omits the
+    # registration_endpoint and Claude errors "Automatic client registration
+    # isn't supported ... add an OAuth Client ID". (gbrain/oura enable this via
+    # --enable-dcr; here it's ClientRegistrationOptions(enabled=True).)
+    log.info("OAuth enabled (DCR on); issuer=%s", public_url)
+    return InMemoryOAuthProvider(
+        base_url=public_url,
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+    )
 
 
 def build_server() -> FastMCP:
