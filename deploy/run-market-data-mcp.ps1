@@ -27,8 +27,11 @@ $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 $py = "$Root\.venv\Scripts\python.exe"
 Add-Content "$Root\logs\server.log" "`n==== $ts launch (proxy=$($env:HTTPS_PROXY)) ===="
 Add-Content "$Root\logs\server.log" "python: $(& $py --version 2>&1)"
-# -u = unbuffered: without it Python block-buffers stdout when piped, so the
-# startup logs never reach the file while the server runs. Capture stdout+stderr
-# and flush every line so we can see exactly where startup gets to.
-& $py -u "$Root\server.py" 2>&1 | ForEach-Object { Add-Content "$Root\logs\server.log" $_ }
+# The server logs to STDERR (logging + uvicorn). With ErrorActionPreference=Stop
+# and stderr piped, PowerShell raises a terminating NativeCommandError on the
+# first log line and kills the launcher (and the child python) before the server
+# ever binds. Switch to Continue and redirect all streams (*>>) straight to the
+# log file; -u keeps it unbuffered so the log is live.
+$ErrorActionPreference = "Continue"
+& $py -u "$Root\server.py" *>> "$Root\logs\server.log"
 Add-Content "$Root\logs\server.log" "==== exited code=$LASTEXITCODE ===="
