@@ -49,7 +49,8 @@ Step 3 "Live data smoke test"
 # Load .env into this process so the test sees the keys.
 Get-Content ".\.env" | Where-Object { $_ -match "^\s*[^#].*=" } | ForEach-Object {
     $k, $v = $_ -split "=", 2
-    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), "Process")
+    $v = ($v -replace '\s+#.*$', '').Trim()   # strip trailing inline comment
+    [Environment]::SetEnvironmentVariable($k.Trim(), $v, "Process")
 }
 .\.venv\Scripts\python.exe -m tests.live_smoke
 if ($LASTEXITCODE -ne 0) {

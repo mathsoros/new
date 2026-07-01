@@ -14,7 +14,10 @@ New-Item -ItemType Directory -Force -Path "$Root\logs" | Out-Null
 # FRED/Finnhub go out via the proxy, China data hosts stay direct via NO_PROXY.
 Get-Content "$Root\.env" | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object {
     $k, $v = $_ -split '=', 2
-    Set-Item -Path Env:$($k.Trim()) -Value $v.Trim()
+    # Strip any trailing ' # inline comment' so it doesn't leak into the value
+    # (e.g. HOST=127.0.0.1  # comment -> "127.0.0.1").
+    $v = ($v -replace '\s+#.*$', '').Trim()
+    Set-Item -Path Env:$($k.Trim()) -Value $v
 }
 
 # Fixed for the remote deployment regardless of .env.
