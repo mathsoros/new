@@ -21,6 +21,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+import requests
+
 from . import last_row, pick_col, to_float
 from ..contract import GMT8
 
@@ -344,23 +346,25 @@ def fx_swap_points(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
 
 
 def offshore_usdcnh() -> Optional[float]:
-    """Offshore USD/CNH spot mid, best-effort from CFETS 外币对 quotes.
+    """Offshore USD/CNH spot from Sina realtime forex (fx_susdcnh).
 
-    ``fx_pair_quote`` carries G10 pairs and may include USD/CNH; returns the mid
-    or ``None`` when the pair isn't present (free-tier gap, not fabricated).
+    Sina serves 离岸人民币（香港） at hq.sinajs.cn (needs a Referer). The
+    comma-payload fields are: [0]time [1]bid [2]ask [3]prev_close [5]open
+    [6]high [7]low [8]last [9]name ... — we take [8] (last), falling back to the
+    bid. Returns None on any failure (never fabricated).
     """
     try:
-        df = _ak().fx_pair_quote()
-        pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
-        bid_c = pick_col(df, ["买", "bid"])
-        ask_c = pick_col(df, ["卖", "ask"])
-        row = _pair_row(df, pair_c, offshore=True)
-        if row is not None:
-            bid = to_float(row.get(bid_c)) if bid_c else None
-            ask = to_float(row.get(ask_c)) if ask_c else None
-            if bid and ask:
-                return round((bid + ask) / 2, 4)
-            return bid or ask
+        r = requests.get(
+            "https://hq.sinajs.cn/list=fx_susdcnh",
+            timeout=8,
+            headers={"Referer": "https://finance.sina.com.cn"},
+        )
+        if '="' in r.text:
+            parts = r.text.split('="', 1)[1].rstrip('";\n').split(",")
+            if len(parts) > 8:
+                val = to_float(parts[8]) or to_float(parts[1])
+                if val is not None and 3 < val < 15:  # sanity: USD/CNH ~7
+                    return round(val, 4)
     except Exception:
         pass
     return None

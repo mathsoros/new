@@ -227,14 +227,14 @@ def get_usdcny_spot() -> dict[str, Any]:
             }
             notes.append(f"CFETS onshore spot unavailable: {e}")
 
-        # Offshore USD/CNH: AkShare CFETS 外币对 first, Finnhub fallback.
+        # Offshore USD/CNH: Sina realtime forex first, Finnhub fallback.
         cnh_val = ak_src.offshore_usdcnh()
         if cnh_val is None:
             cnh = fh.safe_quote("OANDA:USD_CNH")
             cnh_val = cnh["current"] if cnh else None
         data["offshore_usdcnh"] = q(cnh_val, "USD/CNH")
         if cnh_val is None:
-            notes.append("USDCNH unavailable (AkShare 外币对 / Finnhub free tier); not fabricated.")
+            notes.append("USDCNH unavailable (Sina fx / Finnhub); not fabricated.")
 
         # CNH-CNY basis (offshore minus onshore mid), in pips.
         if cnh_val is not None and onshore_mid is not None:
