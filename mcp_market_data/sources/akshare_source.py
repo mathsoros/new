@@ -87,6 +87,21 @@ def _pair_row(df, pair_c, *, offshore: bool = False):
     return last_row(df[usd & cny])
 
 
+def _parse_swap_cell(x) -> Optional[float]:
+    """Parse a CFETS swap-points cell into a single midpoint number.
+
+    Cells are "bid/ask" strings, e.g. "-143.84/-132.00" -> -137.92; a one-sided
+    "---/-1770.00" -> -1770.0; "---/---" -> None.
+    """
+    if x is None:
+        return None
+    parts = [to_float(p) for p in str(x).split("/")]
+    vals = [v for v in parts if v is not None]
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals), 2)
+
+
 # --------------------------------------------------------------------------- #
 # Equities
 # --------------------------------------------------------------------------- #
@@ -212,19 +227,24 @@ def market_breadth() -> dict[str, Optional[float]]:
 
 
 def sw_first_sectors() -> list[dict[str, Any]]:
-    """Shenwan level-1 sector intraday change list (name + change%).
+    """Shenwan level-1 sector change list (name + change%).
 
-    ``index_realtime_sw(symbol="一级行业")`` returns the SW level-1 board with
-    指数代码/指数名称/涨跌幅/...
+    ``index_realtime_sw(symbol="一级行业")`` returns 指数代码/指数名称/昨收盘/
+    今开盘/最新价/成交额/... — there is NO 涨跌幅 column, so derive it from
+    最新价 vs 昨收盘.
     """
     df = _ak().index_realtime_sw(symbol="一级行业")
-    name_c = pick_col(df, ["名称", "指数名称"])
-    chg_c = pick_col(df, ["涨跌幅"])
+    name_c = pick_col(df, ["指数名称", "名称"])
+    last_c = pick_col(df, ["最新价"])
+    prev_c = pick_col(df, ["昨收盘", "昨收"])
     out: list[dict[str, Any]] = []
-    if name_c is None or chg_c is None:
+    if name_c is None or last_c is None or prev_c is None:
         return out
     for _, r in df.iterrows():
-        out.append({"name": str(r[name_c]), "change_pct": to_float(r[chg_c])})
+        last = to_float(r.get(last_c))
+        prev = to_float(r.get(prev_c))
+        pct = round((last - prev) / prev * 100, 2) if (last and prev) else None
+        out.append({"name": str(r.get(name_c)), "change_pct": pct})
     return out
 
 
@@ -259,17 +279,46 @@ def cfets_spot(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
 
     ``fx_spot_quote`` returns 货币对/买报价/卖报价 for CFETS spot.
     """
-    df = _ak().fx_spot_quote()
-    pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
-    bid_c = pick_col(df, ["买", "bid"])
-    ask_c = pick_col(df, ["卖", "ask"])
-    row = _pair_row(df, pair_c, offshore="CNH" in pair.upper())
-    if row is None:
-        return {"bid": None, "ask": None, "mid": None}
-    bid = to_float(row.get(bid_c)) if bid_c else None
-    ask = to_float(row.get(ask_c)) if ask_c else None
-    mid = round((bid + ask) / 2, 4) if (bid is not None and ask is not None) else None
-    return {"bid": bid, "ask": ask, "mid": mid}
+    # 1) CFETS interbank spot — but it is NaN before the 09:30 CST open, which is
+    #    exactly when the morning report runs. Try it, fall through if empty.
+    try:
+        df = _ak().fx_spot_quote()
+        pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
+        bid_c = pick_col(df, ["买", "bid"])
+        ask_c = pick_col(df, ["卖", "ask"])
+        row = _pair_row(df, pair_c, offshore="CNH" in pair.upper())
+        if row is not None:
+            bid = to_float(row.get(bid_c)) if bid_c else None
+            ask = to_float(row.get(ask_c)) if ask_c else None
+            if bid is not None or ask is not None:
+                mid = round((bid + ask) / 2, 4) if (bid and ask) else (bid or ask)
+                return {"bid": bid, "ask": ask, "mid": mid, "source": "CFETS"}
+    except Exception:
+        pass
+    # 2) Fallback (onshore only): BOC Sina daily reference rates. 中行折算价 ≈ mid,
+    #    汇买/汇卖 as bid/ask. Quoted per 100 units → normalise to per-1.
+    if "CNH" not in pair.upper():
+        try:
+            start, end = _window(10)
+            df = _ak().currency_boc_sina(symbol="美元", start_date=start, end_date=end)
+            row = last_row(df)
+            if row is not None:
+                buy_c = pick_col(df, ["中行汇买价", "汇买"])
+                sell_c = pick_col(df, ["中行钞卖价/汇卖价", "汇卖"])
+                conv_c = pick_col(df, ["中行折算价", "折算"])
+
+                def per1(c):
+                    v = to_float(row.get(c)) if c else None
+                    return round(v / 100, 4) if (v is not None and v > 50) else v
+
+                bid, ask, mid = per1(buy_c), per1(sell_c), per1(conv_c)
+                if mid is None and bid and ask:
+                    mid = round((bid + ask) / 2, 4)
+                if bid or ask or mid:
+                    return {"bid": bid, "ask": ask, "mid": mid, "source": "BOC (Sina, pre-open ref)"}
+        except Exception:
+            pass
+    return {"bid": None, "ask": None, "mid": None, "source": None}
 
 
 def fx_swap_points(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
@@ -285,12 +334,36 @@ def fx_swap_points(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
         return {"1M": None, "3M": None, "1Y": None}
     c1m = pick_col(df, ["1月", "1M", "一个月"])
     c3m = pick_col(df, ["3月", "3M", "三个月"])
-    c1y = pick_col(df, ["1年", "1Y", "一年"])
+    # The 1-year column header carries a space ("1 年"); match on 年.
+    c1y = pick_col(df, ["1年", "1 年", "年", "1Y", "一年"])
     return {
-        "1M": to_float(row.get(c1m)) if c1m else None,
-        "3M": to_float(row.get(c3m)) if c3m else None,
-        "1Y": to_float(row.get(c1y)) if c1y else None,
+        "1M": _parse_swap_cell(row.get(c1m)) if c1m else None,
+        "3M": _parse_swap_cell(row.get(c3m)) if c3m else None,
+        "1Y": _parse_swap_cell(row.get(c1y)) if c1y else None,
     }
+
+
+def offshore_usdcnh() -> Optional[float]:
+    """Offshore USD/CNH spot mid, best-effort from CFETS 外币对 quotes.
+
+    ``fx_pair_quote`` carries G10 pairs and may include USD/CNH; returns the mid
+    or ``None`` when the pair isn't present (free-tier gap, not fabricated).
+    """
+    try:
+        df = _ak().fx_pair_quote()
+        pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
+        bid_c = pick_col(df, ["买", "bid"])
+        ask_c = pick_col(df, ["卖", "ask"])
+        row = _pair_row(df, pair_c, offshore=True)
+        if row is not None:
+            bid = to_float(row.get(bid_c)) if bid_c else None
+            ask = to_float(row.get(ask_c)) if ask_c else None
+            if bid and ask:
+                return round((bid + ask) / 2, 4)
+            return bid or ask
+    except Exception:
+        pass
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -405,3 +478,31 @@ def shfe_main(symbol: str) -> dict[str, Optional[Any]]:
         "change_pct": chg,
         "date": str(df.iloc[-1].get(date_c)) if date_c else None,
     }
+
+
+# Foreign commodity realtime symbols: OIL = ICE Brent, CONC = NYMEX WTI.
+_FOREIGN_OIL = {"brent": "OIL", "wti": "CONC"}
+
+
+def foreign_oil() -> dict[str, dict[str, Optional[float]]]:
+    """Brent & WTI realtime close + change% from AkShare (free), replacing the
+    Finnhub oil symbols that the free tier doesn't cover.
+
+    ``futures_foreign_commodity_realtime`` returns 名称/最新价/涨跌幅/... for a
+    foreign contract. OIL resolves to 布伦特原油; CONC to NYMEX WTI (best-effort).
+    """
+    out = {"brent": {"close": None, "change_pct": None},
+           "wti": {"close": None, "change_pct": None}}
+    for want, sym in _FOREIGN_OIL.items():
+        try:
+            df = _ak().futures_foreign_commodity_realtime(symbol=sym)
+            row = last_row(df)
+            if row is None:
+                continue
+            last_c = pick_col(df, ["最新价", "close"])
+            pct_c = pick_col(df, ["涨跌幅", "change"])
+            out[want]["close"] = to_float(row.get(last_c)) if last_c else None
+            out[want]["change_pct"] = to_float(row.get(pct_c)) if pct_c else None
+        except Exception:
+            continue
+    return out

@@ -217,6 +217,8 @@ def get_usdcny_spot() -> dict[str, Any]:
                 "ask": q(spot["ask"], "USD/CNY"),
                 "mid": q(spot["mid"], "USD/CNY"),
             }
+            if spot.get("source"):
+                notes.append(f"Onshore spot via {spot['source']}.")
         except Exception as e:
             data["onshore_spot"] = {
                 "bid": q(None, "USD/CNY"),
@@ -225,11 +227,14 @@ def get_usdcny_spot() -> dict[str, Any]:
             }
             notes.append(f"CFETS onshore spot unavailable: {e}")
 
-        cnh = fh.safe_quote("OANDA:USD_CNH")
-        cnh_val = cnh["current"] if cnh else None
+        # Offshore USD/CNH: AkShare CFETS 外币对 first, Finnhub fallback.
+        cnh_val = ak_src.offshore_usdcnh()
+        if cnh_val is None:
+            cnh = fh.safe_quote("OANDA:USD_CNH")
+            cnh_val = cnh["current"] if cnh else None
         data["offshore_usdcnh"] = q(cnh_val, "USD/CNH")
-        if cnh is None:
-            notes.append("USDCNH unavailable on Finnhub (not fabricated).")
+        if cnh_val is None:
+            notes.append("USDCNH unavailable (AkShare 外币对 / Finnhub free tier); not fabricated.")
 
         # CNH-CNY basis (offshore minus onshore mid), in pips.
         if cnh_val is not None and onshore_mid is not None:
@@ -269,7 +274,7 @@ def get_usdcny_forwards() -> dict[str, Any]:
                 source="AkShare / CFETS",
                 data=data,
                 status=derive_status(data),
-                notes="Day-on-day swap-point change requires a prior snapshot; not stored in this stateless build.",
+                notes="Swap points = mid of CFETS bid/ask. Day-on-day change not stored (stateless build).",
                 source_tz=CST_TZ,
             )
         except Exception as e:
@@ -444,22 +449,27 @@ def get_commodities() -> dict[str, Any]:
                 notes.append(f"SHFE {name} unavailable: {e}")
         data["shfe_metals"] = metals
 
-        # Brent / WTI best-effort via Finnhub.
-        brent = fh.safe_quote("OANDA:BCO_USD")
-        wti = fh.safe_quote("OANDA:WTICO_USD")
-        data["brent"] = {
-            "close": q(brent["current"] if brent else None, "USD/bbl"),
-            "change_pct": q(brent["change_pct"] if brent else None, "%"),
-        }
-        data["wti"] = {
-            "close": q(wti["current"] if wti else None, "USD/bbl"),
-            "change_pct": q(wti["change_pct"] if wti else None, "%"),
-        }
-        if brent is None or wti is None:
-            notes.append("Brent/WTI best-effort via Finnhub; null when uncovered (not fabricated).")
+        # Brent / WTI: AkShare foreign realtime (ICE Brent / NYMEX WTI); the
+        # Finnhub free tier doesn't cover these symbols. Finnhub as last resort.
+        oil = ak_src.foreign_oil()
+        brent_c, brent_p = oil["brent"]["close"], oil["brent"]["change_pct"]
+        wti_c, wti_p = oil["wti"]["close"], oil["wti"]["change_pct"]
+        if brent_c is None:
+            fb = fh.safe_quote("OANDA:BCO_USD")
+            if fb:
+                brent_c, brent_p = fb["current"], fb["change_pct"]
+        if wti_c is None:
+            fw = fh.safe_quote("OANDA:WTICO_USD")
+            if fw:
+                wti_c, wti_p = fw["current"], fw["change_pct"]
+        data["brent"] = {"close": q(brent_c, "USD/bbl"), "change_pct": q(brent_p, "%")}
+        data["wti"] = {"close": q(wti_c, "USD/bbl"), "change_pct": q(wti_p, "%")}
+        notes.append("Brent/WTI via AkShare foreign realtime (ICE/NYMEX).")
+        if wti_c is None:
+            notes.append("WTI unavailable (symbol/coverage); not fabricated.")
 
         return envelope(
-            source="AkShare / SHFE + Finnhub (oil)",
+            source="AkShare (SHFE metals + ICE/NYMEX oil)",
             data=data,
             status=derive_status(data),
             notes=" ".join(notes),
