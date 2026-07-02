@@ -56,18 +56,29 @@ def _build_auth():
     public_url = os.environ.get("PUBLIC_URL")
     if not public_url:
         raise SystemExit("MCP_AUTH=oauth requires PUBLIC_URL=https://<your-domain>")
-    from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
     from mcp.server.auth.settings import ClientRegistrationOptions
+
+    from mcp_market_data.persistent_oauth import PersistentOAuthProvider
 
     # DCR (dynamic client registration) MUST be enabled — Claude's connector
     # self-registers via POST /register; without it the AS metadata omits the
     # registration_endpoint and Claude errors "Automatic client registration
     # isn't supported ... add an OAuth Client ID". (gbrain/oura enable this via
     # --enable-dcr; here it's ClientRegistrationOptions(enabled=True).)
-    log.info("OAuth enabled (DCR on); issuer=%s", public_url)
-    return InMemoryOAuthProvider(
+    #
+    # PersistentOAuthProvider persists clients+tokens to disk so the token
+    # survives restarts — otherwise a redeploy/reboot invalidates the connector
+    # and the non-interactive morning-report routine can't re-auth (it silently
+    # falls back to web search). Store path defaults next to this file.
+    store_path = os.environ.get(
+        "OAUTH_STORE_PATH",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".oauth_store.json"),
+    )
+    log.info("OAuth enabled (DCR on, persistent store=%s); issuer=%s", store_path, public_url)
+    return PersistentOAuthProvider(
         base_url=public_url,
         client_registration_options=ClientRegistrationOptions(enabled=True),
+        store_path=store_path,
     )
 
 

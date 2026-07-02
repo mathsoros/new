@@ -5,3 +5,5 @@ __pycache__/
 logs/
 *.log
 .pytest_cache/
+.oauth_store.json
+.oauth_store.tmp
