@@ -480,8 +480,9 @@ def shfe_main(symbol: str) -> dict[str, Optional[Any]]:
     }
 
 
-# Foreign commodity realtime symbols: OIL = ICE Brent, CONC = NYMEX WTI.
-_FOREIGN_OIL = {"brent": "OIL", "wti": "CONC"}
+# Foreign commodity realtime symbols (Sina 外盘): OIL = ICE Brent, CL = NYMEX WTI.
+# Several WTI aliases are tried in order until one returns a quote.
+_FOREIGN_OIL = {"brent": ["OIL"], "wti": ["CL", "CONC", "WTI"]}
 
 
 def foreign_oil() -> dict[str, dict[str, Optional[float]]]:
@@ -489,20 +490,25 @@ def foreign_oil() -> dict[str, dict[str, Optional[float]]]:
     Finnhub oil symbols that the free tier doesn't cover.
 
     ``futures_foreign_commodity_realtime`` returns 名称/最新价/涨跌幅/... for a
-    foreign contract. OIL resolves to 布伦特原油; CONC to NYMEX WTI (best-effort).
+    foreign contract. OIL -> 布伦特原油; CL -> NYMEX WTI.
     """
     out = {"brent": {"close": None, "change_pct": None},
            "wti": {"close": None, "change_pct": None}}
-    for want, sym in _FOREIGN_OIL.items():
-        try:
-            df = _ak().futures_foreign_commodity_realtime(symbol=sym)
-            row = last_row(df)
-            if row is None:
+    for want, syms in _FOREIGN_OIL.items():
+        for sym in syms:
+            try:
+                df = _ak().futures_foreign_commodity_realtime(symbol=sym)
+                row = last_row(df)
+                if row is None:
+                    continue
+                last_c = pick_col(df, ["最新价", "close"])
+                pct_c = pick_col(df, ["涨跌幅", "change"])
+                close = to_float(row.get(last_c)) if last_c else None
+                pct = to_float(row.get(pct_c)) if pct_c else None
+                if close is not None:
+                    out[want]["close"] = round(close, 3)
+                    out[want]["change_pct"] = round(pct, 2) if pct is not None else None
+                    break  # found a working symbol for this product
+            except Exception:
                 continue
-            last_c = pick_col(df, ["最新价", "close"])
-            pct_c = pick_col(df, ["涨跌幅", "change"])
-            out[want]["close"] = to_float(row.get(last_c)) if last_c else None
-            out[want]["change_pct"] = to_float(row.get(pct_c)) if pct_c else None
-        except Exception:
-            continue
     return out
