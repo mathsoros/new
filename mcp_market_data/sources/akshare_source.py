@@ -281,14 +281,27 @@ def cfets_spot(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
 
     ``fx_spot_quote`` returns 货币对/买报价/卖报价 for CFETS spot.
     """
-    # 1) CFETS interbank spot — but it is NaN before the 09:30 CST open, which is
-    #    exactly when the morning report runs. Try it, fall through if empty.
+    offshore = "CNH" in pair.upper()
+
+    # 1) Sina realtime onshore/offshore spot — interbank-style quote, tight
+    #    spread, and (crucially) it holds the LAST traded price pre-open, when the
+    #    CFETS interbank feed returns NaN and the morning report actually runs.
+    q = _sina_fx("fx_susdcnh" if offshore else "fx_susdcny")
+    if q:
+        return {
+            "bid": q["bid"],
+            "ask": q["ask"],
+            "mid": q["last"],
+            "source": "Sina " + ("offshore" if offshore else "onshore") + " spot (last)",
+        }
+
+    # 2) CFETS interbank spot (intraday only; NaN pre-open).
     try:
         df = _ak().fx_spot_quote()
         pair_c = pick_col(df, ["货币对", "pair"]) or df.columns[0]
         bid_c = pick_col(df, ["买", "bid"])
         ask_c = pick_col(df, ["卖", "ask"])
-        row = _pair_row(df, pair_c, offshore="CNH" in pair.upper())
+        row = _pair_row(df, pair_c, offshore=offshore)
         if row is not None:
             bid = to_float(row.get(bid_c)) if bid_c else None
             ask = to_float(row.get(ask_c)) if ask_c else None
@@ -297,27 +310,23 @@ def cfets_spot(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
                 return {"bid": bid, "ask": ask, "mid": mid, "source": "CFETS"}
     except Exception:
         pass
-    # 2) Fallback (onshore only): BOC Sina daily reference rates. 中行折算价 ≈ mid,
-    #    汇买/汇卖 as bid/ask. Quoted per 100 units → normalise to per-1.
-    if "CNH" not in pair.upper():
+
+    # 3) Last resort (onshore only): BOC 折算价 as a MID reference (≈ fixing).
+    #    Deliberately NO bid/ask — BOC 汇买/汇卖 are retail rates with a ~300-pip
+    #    spread that misrepresents the interbank spot.
+    if not offshore:
         try:
             start, end = _window(10)
             df = _ak().currency_boc_sina(symbol="美元", start_date=start, end_date=end)
             row = last_row(df)
             if row is not None:
-                buy_c = pick_col(df, ["中行汇买价", "汇买"])
-                sell_c = pick_col(df, ["中行钞卖价/汇卖价", "汇卖"])
                 conv_c = pick_col(df, ["中行折算价", "折算"])
-
-                def per1(c):
-                    v = to_float(row.get(c)) if c else None
-                    return round(v / 100, 4) if (v is not None and v > 50) else v
-
-                bid, ask, mid = per1(buy_c), per1(sell_c), per1(conv_c)
-                if mid is None and bid and ask:
-                    mid = round((bid + ask) / 2, 4)
-                if bid or ask or mid:
-                    return {"bid": bid, "ask": ask, "mid": mid, "source": "BOC (Sina, pre-open ref)"}
+                mid = to_float(row.get(conv_c)) if conv_c else None
+                if mid is not None and mid > 50:
+                    mid = round(mid / 100, 4)
+                if mid is not None:
+                    return {"bid": None, "ask": None, "mid": mid,
+                            "source": "BOC ref (fixing-based, no interbank spot)"}
         except Exception:
             pass
     return {"bid": None, "ask": None, "mid": None, "source": None}
@@ -345,29 +354,45 @@ def fx_swap_points(pair: str = "USD/CNY") -> dict[str, Optional[float]]:
     }
 
 
-def offshore_usdcnh() -> Optional[float]:
-    """Offshore USD/CNH spot from Sina realtime forex (fx_susdcnh).
+def _sina_fx(symbol: str) -> Optional[dict[str, Optional[float]]]:
+    """Parse a Sina realtime forex quote (fx_s* family) into last/bid/ask.
 
-    Sina serves 离岸人民币（香港） at hq.sinajs.cn (needs a Referer). The
-    comma-payload fields are: [0]time [1]bid [2]ask [3]prev_close [5]open
-    [6]high [7]low [8]last [9]name ... — we take [8] (last), falling back to the
-    bid. Returns None on any failure (never fabricated).
+    Sina serves these at hq.sinajs.cn (needs a Referer). Comma-payload fields:
+    [0]time [1]bid [2]ask [3]prev_close [5]open [6]high [7]low [8]last [9]name
+    ... [17]date. Works ~24h for CNH and holds the last onshore close pre-open
+    for CNY. Returns {last,bid,ask,date} or None. The bid/ask here are the
+    interbank-style quote (a few pips), NOT bank retail rates.
     """
     try:
         r = requests.get(
-            "https://hq.sinajs.cn/list=fx_susdcnh",
+            f"https://hq.sinajs.cn/list={symbol}",
             timeout=8,
             headers={"Referer": "https://finance.sina.com.cn"},
         )
-        if '="' in r.text:
-            parts = r.text.split('="', 1)[1].rstrip('";\n').split(",")
-            if len(parts) > 8:
-                val = to_float(parts[8]) or to_float(parts[1])
-                if val is not None and 3 < val < 15:  # sanity: USD/CNH ~7
-                    return round(val, 4)
+        if '="' not in r.text:
+            return None
+        parts = r.text.split('="', 1)[1].rstrip('";\n').split(",")
+        if len(parts) < 9:
+            return None
+        bid = to_float(parts[1])
+        ask = to_float(parts[2])
+        last = to_float(parts[8]) or bid
+        if last is None or not (3 < last < 15):  # sanity: USD/CN? ~7
+            return None
+        return {
+            "last": round(last, 4),
+            "bid": round(bid, 4) if bid is not None else None,
+            "ask": round(ask, 4) if ask is not None else None,
+            "date": parts[17] if len(parts) > 17 else None,
+        }
     except Exception:
-        pass
-    return None
+        return None
+
+
+def offshore_usdcnh() -> Optional[float]:
+    """Offshore USD/CNH spot (last) from Sina realtime forex (fx_susdcnh)."""
+    q = _sina_fx("fx_susdcnh")
+    return q["last"] if q else None
 
 
 # --------------------------------------------------------------------------- #

@@ -192,8 +192,9 @@ def get_us_rates() -> dict[str, Any]:
 # 3. USD/CNY spot
 # --------------------------------------------------------------------------- #
 def get_usdcny_spot() -> dict[str, Any]:
-    """PBOC central parity, onshore CFETS spot (bid/ask/mid), offshore USDCNH
-    (Finnhub), and the CNH-CNY basis."""
+    """PBOC central parity, onshore USD/CNY spot (Sina last, interbank-style
+    bid/ask; holds prior close pre-open), offshore USD/CNH (Sina), and the
+    CNH-CNY basis (offshore last minus onshore last)."""
 
     def build() -> dict[str, Any]:
         notes: list[str] = []
